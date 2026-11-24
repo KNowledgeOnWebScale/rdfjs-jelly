@@ -191,4 +191,28 @@ describe('browser Web Streams', () => {
     await expect(writer.close()).rejects.toThrow('Truncated');
     await readError;
   });
+
+  it('gives its decoder state after the end, to continue in another parser', async () => {
+    const quad = (n: number): RDF.Quad => DataFactory.quad(DataFactory.namedNode(`urn:s${n}`), DataFactory.namedNode('urn:p'), DataFactory.literal(`${n}`));
+    const first = new Writer({ messageSize: 1 });
+    first.addQuads([quad(0), quad(1)]);
+    const bytes = await new Promise<Uint8Array>((resolve, reject) => first.end((error, output) => error ? reject(error) : resolve(output!)));
+    // The end of the first frame, whose length is a one-byte varint.
+    expect(bytes[0]).toBeLessThan(0x80);
+    const cut = bytes[0]! + 1;
+    expect(cut).toBeLessThan(bytes.length);
+
+    const parser = new StreamParser();
+    expect(parser.getState()).toBeUndefined();
+    const output = collect(parser.readable);
+    const writer = parser.writable.getWriter();
+    await writer.write(bytes.subarray(0, cut));
+    await writer.close();
+    const quads = await output as RDF.Quad[];
+    const state = parser.getState()!;
+    expect(state.options.version).toBe(3);
+
+    const rest = new Parser({ state }).parse(bytes.subarray(cut)) as RDF.Quad[];
+    expect([...quads, ...rest].map(q => q.subject.value)).toEqual(['urn:s0', 'urn:s1']);
+  });
 });

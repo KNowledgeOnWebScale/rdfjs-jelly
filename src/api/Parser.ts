@@ -2,7 +2,7 @@ import type * as RDF from '@rdfjs/types';
 import { Decoder, type DecoderEvents } from '../codec/Decoder';
 import { DirectMessageDecoder, DirectQuadDecoder } from '../codec/MessageDecoder';
 import { DataFactory } from '../rdfjs/adapter';
-import { Message, type BinaryInput, type MessageQuadArray, type ParseCallback, type ParserOptions, type ParserOutput } from '../types';
+import { Message, type BinaryInput, type DecoderState, type MessageQuadArray, type ParseCallback, type ParserOptions, type ParserOutput } from '../types';
 
 interface NodeBufferConstructor {
   from(buffer: ArrayBufferLike, byteOffset: number, length: number): Uint8Array;
@@ -20,6 +20,7 @@ function optimizedBinaryInput(input: BinaryInput): BinaryInput {
 export class Parser {
   public readonly options: ParserOptions;
   public _factory: RDF.DataFactory;
+  private lastDecoder?: Decoder;
 
   public constructor(options: ParserOptions = {}) {
     this.options = options;
@@ -60,6 +61,15 @@ export class Parser {
     }
   }
 
+  /**
+   * The decoder state at the end of the last parse() or parseMessages() call,
+   * from which a new parser continues the stream with the `state` option.
+   * Undefined when no stream options were read.
+   */
+  public getState(): DecoderState | undefined {
+    return this.lastDecoder?.getState();
+  }
+
   public parseMessages(input: BinaryInput): Message[] {
     return this.decode(input).messages;
   }
@@ -69,7 +79,7 @@ export class Parser {
     events: DecoderEvents = {},
     consume?: (message: Message) => void,
   ): { messages: Message[]; decoder: Decoder; messageCount: number } {
-    const decoder = new Decoder(this.options, events);
+    const decoder = this.lastDecoder = new Decoder(this.options, events);
     const reader = new DirectMessageDecoder(this.options, decoder);
     const messages: Message[] = [];
     let messageCount = 0;
@@ -86,7 +96,7 @@ export class Parser {
 
   private decodeQuads(input: BinaryInput): RDF.Quad[] {
     const output: RDF.Quad[] = [];
-    const decoder = new Decoder(this.options);
+    const decoder = this.lastDecoder = new Decoder(this.options);
     const reader = new DirectQuadDecoder(this.options, decoder, output);
     reader.decodeEach(optimizedBinaryInput(input), () => undefined);
     for (const message of decoder.finishMessages()) for (const quad of message) output.push(quad);

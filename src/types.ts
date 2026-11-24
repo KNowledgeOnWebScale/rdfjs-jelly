@@ -65,6 +65,41 @@ export interface StreamOptions {
   rdfVersion?: RdfVersion;
 }
 
+/** An RDF term as plain data, so that a {@link DecoderState} survives JSON serialization. */
+export type DecoderStateTerm =
+  | { termType: 'NamedNode'; value: string }
+  | { termType: 'BlankNode'; value: string }
+  | { termType: 'Literal'; value: string; language?: string; datatype?: string }
+  | { termType: 'DefaultGraph' };
+
+/** A lookup table of a {@link DecoderState}. */
+export interface LookupTableState {
+  /** The value of identifier `i + 1` at index `i`; null for an identifier that was never assigned. */
+  values: Array<string | null>;
+  /** The identifier that was assigned last: identifier 0 in a lookup entry is the one after it. */
+  lastAssigned: number;
+  /** Jelly 1.1: the identifier that was referred to last, for prefix and name identifier 0 in an IRI. */
+  lastReused: number;
+}
+
+/**
+ * Everything a decoder needs to continue a stream after the last frame it read,
+ * as JSON-serializable data. Pass it as the `state` option of a parser to decode
+ * the frames that follow, without the frames before them.
+ */
+export interface DecoderState {
+  options: StreamOptions;
+  /** The counter of the next message, so that counters and message-scoped blank nodes continue. */
+  messageCounter: number;
+  prefixes: LookupTableState;
+  names: LookupTableState;
+  datatypes: LookupTableState;
+  /** Jelly 1.1: the terms of the previous statement (subject, predicate, object, graph), which a statement may repeat. */
+  repeated?: Array<DecoderStateTerm | null>;
+  /** Jelly 1.1, GRAPHS streams: the graph that is open. */
+  graph?: DecoderStateTerm;
+}
+
 /** Positions within a pattern are ANDed; patterns are ORed. Omitted or null
  * positions are wildcards. Blank-node labels refer to parser output labels. */
 export interface QuadPattern {
@@ -93,6 +128,11 @@ export interface ParserOptions {
    * this only guards against a hostile stream declaring an absurd table.
    */
   maxLookupTableSize?: number;
+  /**
+   * Start from the state of an earlier parser (see `getState()`), to decode the
+   * frames that followed the ones it read. That input need not start with stream options.
+   */
+  state?: DecoderState;
 }
 
 export interface StreamParserOptions extends ParserOptions, TransformOptions {}

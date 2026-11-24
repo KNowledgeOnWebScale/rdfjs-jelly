@@ -1,7 +1,8 @@
 import { Transform, type Readable, type TransformCallback } from 'node:stream';
 import { Decoder } from '../codec/Decoder';
 import { DirectMessageDecoder } from '../codec/MessageDecoder';
-import type { Message, ParserOutputItem, StreamParserOptions } from '../types';
+import { JellyError } from '../errors';
+import type { DecoderState, Message, ParserOutputItem, StreamParserOptions } from '../types';
 
 /**
  * Node's Transform already stops accepting chunks once the readable side is
@@ -30,6 +31,19 @@ export class StreamParser extends Transform {
       namespace: (prefix, iri) => this.emit('namespace', prefix, iri),
     });
     this.messageReader = new DirectMessageDecoder(options, this.decoder);
+  }
+
+  /**
+   * The decoder state after the last frame that was decoded, from which a new
+   * parser continues the stream with the `state` option. Undefined before the
+   * stream options were read. Throws while bytes of a frame are still buffered,
+   * because the state would not match the bytes that were written.
+   */
+  public getState(): DecoderState | undefined {
+    if (this.messageReader.bufferedBytes > 0) {
+      throw new JellyError(`The decoder state is only defined between frames, and ${this.messageReader.bufferedBytes} bytes are still buffered`);
+    }
+    return this.decoder.getState();
   }
 
   public import(stream: Readable): this {

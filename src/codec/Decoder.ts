@@ -31,8 +31,20 @@ import type {
 } from '../generated/rdf_pb';
 import { MAX_DECODED_LOOKUP_SIZE, MIN_NAME_LOOKUP_SIZE, XSD_STRING } from '../options';
 import { DataFactory } from '../rdfjs/adapter';
-import { LogicalStreamType, Message, PhysicalStreamType, type ParserOptions, type QuadPattern, type StreamOptions } from '../types';
+import {
+  LogicalStreamType, Message, PhysicalStreamType,
+  type DecoderState, type DecoderStateTerm, type ParserOptions, type QuadPattern, type StreamOptions,
+} from '../types';
 import { LookupDecoder } from './LookupDecoder';
+
+function stateTerm(term: RDF.Term): DecoderStateTerm {
+  if (term.termType === 'NamedNode' || term.termType === 'BlankNode') return { termType: term.termType, value: term.value };
+  if (term.termType === 'DefaultGraph') return { termType: 'DefaultGraph' };
+  if (term.termType === 'Literal') {
+    return term.language ? { termType: 'Literal', value: term.value, language: term.language } : { termType: 'Literal', value: term.value, datatype: term.datatype.value };
+  }
+  throw new JellyUnsupportedFeatureError(`A ${term.termType} term cannot be part of the decoder state`);
+}
 
 type NamespaceListener = (prefix: string, iri: RDF.NamedNode) => void;
 type OptionsListener = (options: StreamOptions) => void;
@@ -75,6 +87,53 @@ export class Decoder {
     this.maxLookupTableSize = options.maxLookupTableSize ?? MAX_DECODED_LOOKUP_SIZE;
     this.events = events;
     this.defaultGraph = this.factory.defaultGraph();
+    if (options.state) this.restore(options.state);
+  }
+
+  /**
+   * The state after the last frame that was decoded, from which a new decoder
+   * continues the stream (see the `state` parser option). Undefined before the
+   * stream options were read.
+   */
+  public getState(): DecoderState | undefined {
+    if (this.columns) return this.columns.getState();
+    if (!this.streamOptions) return undefined;
+    return {
+      options: { ...this.streamOptions },
+      messageCounter: this.messageCounter,
+      prefixes: this.prefixes!.getState(),
+      names: this.names!.getState(),
+      datatypes: this.datatypes!.getState(),
+      repeated: Array.from(this.repeated, term => term ? stateTerm(term) : null),
+      ...(this.graph && { graph: stateTerm(this.graph) }),
+    };
+  }
+
+  private restore(state: DecoderState): void {
+    if (state.options.version === 3) {
+      if (3 > this.maxSupportedVersion) throw new JellyUnsupportedFeatureError('Unsupported Jelly protocol version 3');
+      this.columns = new ColumnDecoder(this.parserOptions, this.events);
+      this.columns.restore(state);
+      this.streamOptions = this.columns.streamOptions;
+      return;
+    }
+    this.ingestOptions(state.options as unknown as RdfStreamOptions);
+    this.prefixes!.restore(state.prefixes);
+    this.names!.restore(state.names);
+    this.datatypes!.restore(state.datatypes);
+    this.messageCounter = state.messageCounter;
+    state.repeated?.forEach((term, slot) => { if (term) this.repeated[slot] = this.term(term); });
+    if (state.graph) this.graph = this.term(state.graph) as RDF.Quad_Graph;
+  }
+
+  private term(value: DecoderStateTerm): RDF.Term {
+    if (value.termType === 'NamedNode') return this.factory.namedNode(value.value);
+    if (value.termType === 'BlankNode') return this.factory.blankNode(value.value);
+    if (value.termType === 'DefaultGraph') return this.defaultGraph;
+    if (value.termType === 'Literal') {
+      return this.factory.literal(value.value, value.language || this.factory.namedNode(value.datatype ?? XSD_STRING));
+    }
+    throw new JellyConformanceError(`Invalid term type ${(value as { termType: unknown }).termType} in the decoder state`);
   }
 
   /** Decodes logical messages, which may cross or share column frames. */

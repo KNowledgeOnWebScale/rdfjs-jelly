@@ -285,6 +285,29 @@ blank-node and default graphs. Blank-node patterns use the labels in parser
 output, including the opaque message scope in Jelly 1.2; raw labels from the
 input are not identifiers across independent messages.
 
+## Continuing a stream
+
+A parser can hand over its decoder state, so that another parser decodes the
+frames that follow without reading the frames before them, for example the bytes
+appended to a growing file and fetched with an HTTP Range request:
+
+```js
+const first = new Parser();
+first.parse(bytesSoFar);
+const state = first.getState(); // plain data: store it as JSON
+
+// Later, with only the bytes that were appended after bytesSoFar:
+const quads = new Parser({ state }).parse(appendedBytes);
+```
+
+`StreamParser` (Node and browser) has the same `getState()` and `state` option.
+The state is that after the last frame that was decoded: stream options, lookup
+tables, the next message counter (so that counters and message-scoped blank nodes
+continue) and, for Jelly 1.1, the terms a next statement may repeat and an open
+graph. Cut the input at a frame boundary; `getState()` throws while bytes of a
+frame are buffered, or while a Jelly 1.2 message spans the frame that was read
+last. It returns `undefined` before the stream options were read.
+
 ## SPARQL result sets
 
 [Jelly-SPARQL 1.0.0](https://jelly-rdf.github.io/1.2.x/specification/sparql/)
