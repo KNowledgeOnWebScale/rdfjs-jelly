@@ -4,8 +4,8 @@ import { ColumnSelection } from './ColumnSelection';
 import { SelectiveColumn } from './SelectiveColumn';
 import { ColumnValueDecoder } from './ColumnValueDecoder';
 import { DEFAULT_GRAPH_VALUE, POSITIONS, matchesPatterns, selectivePatterns, selectionPosition, type TermValue } from './QuadFilter';
-import { JellyConformanceError, JellyUnsupportedFeatureError } from '../errors';
-import { Message, type ParserOptions, type QuadPattern, type StreamOptions } from '../types';
+import { JellyConformanceError, JellyError, JellyUnsupportedFeatureError } from '../errors';
+import { Message, type DecoderState, type ParserOptions, type QuadPattern, type StreamOptions } from '../types';
 import type { DecoderEvents } from './Decoder';
 import { ColumnTermDecoder, type ColumnValueReader } from './ColumnTermDecoder';
 
@@ -15,6 +15,7 @@ type I = eu.ostrzyciel.jelly.core.proto.v1.RdfIri;
 function fail(message: string): never { throw new JellyConformanceError(message); }
 const EMPTY_METADATA: ReadonlyMap<string, Uint8Array> = new Map();
 const NO_QUADS: readonly RDF.Quad[] = [];
+type RawColumnOptions = StreamOptions & { streamType: number; rdfVersion: number };
 
 /** The column layout has independent IRI inference sequences and message boundaries. */
 export class ColumnDecoder extends ColumnTermDecoder {
@@ -62,29 +63,14 @@ export class ColumnDecoder extends ColumnTermDecoder {
     for (const row of frame.rows) {
       const kind = (row as typeof row & { $row?: string }).$row ?? row.row;
       if (kind !== 'options') fail('Row layout data is invalid in a column stream');
-      const raw = row.options as unknown as StreamOptions & { streamType: number; rdfVersion: number };
+      const raw = row.options as unknown as RawColumnOptions;
       const old = this.streamOptions;
-      if (raw.version !== 3) fail('Cannot change Jelly layout within a stream');
-      if (raw.generalizedStatements || raw.rdfStar || raw.logicalType) fail('Row layout options are invalid in a column stream');
-      if (raw.physicalType !== 1 && raw.physicalType !== 2) fail('Column streams require physical type TRIPLES or QUADS');
-      if (raw.streamType !== 0 && raw.streamType !== 1) fail(`Unknown RDF stream type ${raw.streamType}`);
-      if (raw.rdfVersion < 0 || raw.rdfVersion > 3) fail(`Unknown RDF version ${raw.rdfVersion}`);
-      if (old && (raw.physicalType !== old.physicalType || raw.streamType !== old.streamType)) fail('Restated options must preserve physical type, stream type, and version');
+      this.validateOptions(raw);
       if (old?.streamType === 1) {
         if (this.openMessage) this.endMessage(out, output, metadata);
         this.resetBlankNodeScope();
       }
-      this.resetLookups(raw);
-      this.valueDecoder = undefined;
-      this.selective = undefined;
-      this.materialized = new WeakMap();
-      this.scopedMaterialized = new WeakMap();
-      this.streamOptions = {
-        streamName: raw.streamName, physicalType: raw.physicalType, logicalType: 0, generalizedStatements: false, rdfStar: false,
-        maxNameTableSize: raw.maxNameTableSize, maxPrefixTableSize: raw.maxPrefixTableSize, maxDatatypeTableSize: raw.maxDatatypeTableSize,
-        version: 3, streamType: raw.streamType, rdfVersion: raw.rdfVersion,
-      };
-      this.events.options?.(this.streamOptions);
+      this.applyOptions(raw);
     }
     const b = frame.columns as eu.ostrzyciel.jelly.core.proto.v1.RdfColumnBatch | null;
     if (!b) return out;
@@ -163,7 +149,52 @@ export class ColumnDecoder extends ColumnTermDecoder {
     return out;
   }
 
-  private endMessage(out: Message[], output: RDF.Quad[] | undefined, metadata: ReadonlyMap<string, Uint8Array>): void {
+  private validateOptions(raw: RawColumnOptions): void {
+    const old = this.streamOptions;
+    if (raw.version !== 3) fail('Cannot change Jelly layout within a stream');
+    if (raw.generalizedStatements || raw.rdfStar || raw.logicalType) fail('Row layout options are invalid in a column stream');
+    if (raw.physicalType !== 1 && raw.physicalType !== 2) fail('Column streams require physical type TRIPLES or QUADS');
+    if (raw.streamType !== 0 && raw.streamType !== 1) fail(`Unknown RDF stream type ${raw.streamType}`);
+    if (raw.rdfVersion < 0 || raw.rdfVersion > 3) fail(`Unknown RDF version ${raw.rdfVersion}`);
+    if (old && (raw.physicalType !== old.physicalType || raw.streamType !== old.streamType)) fail('Restated options must preserve physical type, stream type, and version');
+  }
+
+  private applyOptions(raw: RawColumnOptions): void {
+    this.resetLookups(raw);
+    this.valueDecoder = undefined;
+    this.selective = undefined;
+    this.materialized = new WeakMap();
+    this.scopedMaterialized = new WeakMap();
+    this.streamOptions = {
+      streamName: raw.streamName, physicalType: raw.physicalType, logicalType: 0, generalizedStatements: false, rdfStar: false,
+      maxNameTableSize: raw.maxNameTableSize, maxPrefixTableSize: raw.maxPrefixTableSize, maxDatatypeTableSize: raw.maxDatatypeTableSize,
+      version: 3, streamType: raw.streamType, rdfVersion: raw.rdfVersion,
+    };
+    this.events.options?.(this.streamOptions);
+  }
+
+  /** The state after the last batch; only the lookup tables cross batches. */
+  public getState(): DecoderState | undefined {
+    if (!this.streamOptions) return undefined;
+    if (this.openMessage) throw new JellyError('The decoder state is only defined between messages, and a message is still open');
+    return {
+      options: { ...this.streamOptions },
+      messageCounter: this.counter,
+      prefixes: this.prefixes.getState(),
+      names: this.names.getState(),
+      datatypes: this.datatypes.getState(),
+    };
+  }
+
+  public restore(state: DecoderState): void {
+    const raw = { ...state.options, streamType: state.options.streamType ?? 0, rdfVersion: state.options.rdfVersion ?? 0 };
+    this.validateOptions(raw);
+    this.applyOptions(raw);
+    this.restoreLookups(state);
+    this.counter = state.messageCounter;
+  }
+
+  private endMessage(out: Message[],output: RDF.Quad[] | undefined, metadata: ReadonlyMap<string, Uint8Array>): void {
     // Constructing an empty message is several times cheaper than converting an array into one.
     if (!output) out.push(this.current instanceof Message ? this.current : this.current.length ? this.ownMessage(metadata) : new Message(this.counter, NO_QUADS, metadata));
     this.counter++;

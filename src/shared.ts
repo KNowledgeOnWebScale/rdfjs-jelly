@@ -32,6 +32,9 @@ export {
 export type {
   BinaryInput,
   BinaryOutput,
+  DecoderState,
+  DecoderStateTerm,
+  LookupTableState,
   MessageMetadata,
   MessageQuad,
   MessageQuadArray,

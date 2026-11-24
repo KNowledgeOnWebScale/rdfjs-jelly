@@ -1,5 +1,6 @@
 import { JellyConformanceError } from '../errors';
 import { MAX_DECODED_LOOKUP_SIZE } from '../options';
+import type { LookupTableState } from '../types';
 
 /** Unique across every table, so a cached verdict can never match a replaced table. */
 let nextStamp = 1;
@@ -40,6 +41,29 @@ export class LookupDecoder {
       while (this.stamps[next]) next++;
       this.contiguous = next;
     }
+  }
+
+  public getState(): LookupTableState {
+    let end = this.data.length;
+    while (end > 0 && this.data[end - 1] === undefined) end--;
+    const values: Array<string | null> = [];
+    for (let i = 0; i < end; i++) values.push(this.data[i] ?? null);
+    return { values, lastAssigned: this.lastAssignedIndex, lastReused: this.lastReusedIndex };
+  }
+
+  /** Fills an empty table from {@link getState} of a table of the same size. */
+  public restore(state: LookupTableState): void {
+    for (let i = 0; i < state.values.length; i++) {
+      const value = state.values[i];
+      if (value !== null && value !== undefined) this.assign(i + 1, value);
+    }
+    for (const index of [state.lastAssigned, state.lastReused]) {
+      if (!Number.isInteger(index) || index < 0 || index > this.size) {
+        throw new JellyConformanceError(`Lookup index ${index} in the decoder state is outside table size ${this.size}`);
+      }
+    }
+    this.lastAssignedIndex = state.lastAssigned;
+    this.lastReusedIndex = state.lastReused;
   }
 
   /** Version of the entry at `index`, or 0 when it is outside the table or unassigned. */

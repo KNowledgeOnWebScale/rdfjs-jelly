@@ -4,7 +4,8 @@ import type * as RDF from '@rdfjs/types';
 import { Decoder } from './codec/Decoder';
 import { DirectMessageDecoder } from './codec/MessageDecoder';
 import { Writer } from './api/Writer';
-import type { Message, MessageQuad, ParserOutputItem, StreamOptions, WriterOptions } from './types';
+import { JellyError } from './errors';
+import type { DecoderState, Message, MessageQuad, ParserOutputItem, StreamOptions, WriterOptions } from './types';
 import type { ParserOptions } from './types';
 
 export type BrowserStreamChunk = Uint8Array | ArrayBuffer;
@@ -21,6 +22,7 @@ export class StreamParser {
   public readonly readable: ReadableStream<ParserOutputItem>;
   public readonly writable: WritableStream<BrowserStreamChunk>;
   private readonly listeners: Partial<Record<BrowserParserEvent, Listener[]>> = {};
+  private readonly currentState: () => DecoderState | undefined;
 
   public constructor(options: ParserOptions = {}) {
     const messageMode = options.messages === true || options.rdfMessages === true;
@@ -29,6 +31,16 @@ export class StreamParser {
       namespace: (prefix, iri) => this.emit('namespace', prefix, iri),
     });
     let reader: DirectMessageDecoder | undefined = new DirectMessageDecoder(options, decoder);
+    // Kept after a successful end, so that the final state can still be read.
+    let ended: Decoder | undefined;
+    this.currentState = () => {
+      if (ended) return ended.getState();
+      if (!decoder || !reader) throw new JellyError('The parser failed or was cancelled');
+      if (reader.bufferedBytes > 0) {
+        throw new JellyError(`The decoder state is only defined between frames, and ${reader.bufferedBytes} bytes are still buffered`);
+      }
+      return decoder.getState();
+    };
     let output: ReadableStreamDefaultController<ParserOutputItem>;
     let input: WritableStreamDefaultController;
     let pending: Message | undefined;
@@ -120,6 +132,7 @@ export class StreamParser {
           await drain();
           output.close();
           stopped = true;
+          ended = decoder;
           release();
         } catch (error) {
           fail(error);
@@ -128,6 +141,15 @@ export class StreamParser {
       },
       abort: reason => { fail(reason); },
     });
+  }
+
+  /**
+   * The decoder state after the last frame that was decoded, from which a new
+   * parser continues the stream with the `state` option. Undefined before the
+   * stream options were read. Throws while bytes of a frame are still buffered.
+   */
+  public getState(): DecoderState | undefined {
+    return this.currentState();
   }
 
   public import(stream: ReadableStream<BrowserStreamChunk>): ReadableStream<ParserOutputItem> {

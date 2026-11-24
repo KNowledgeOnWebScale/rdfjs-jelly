@@ -2,7 +2,7 @@ import type * as RDF from '@rdfjs/types';
 import { eu } from '../generated/proto/rdf_pb.mjs';
 import { JellyConformanceError, JellyUnsupportedFeatureError } from '../errors';
 import { MAX_DECODED_LOOKUP_SIZE, RDF_DIR_LANG_STRING, RDF_LANG_STRING, XSD_STRING } from '../options';
-import type { ParserOptions } from '../types';
+import type { DecoderState, ParserOptions } from '../types';
 import { DataFactory } from '../rdfjs/adapter';
 import { LookupDecoder } from './LookupDecoder';
 import { ReusableColumn, decodeUtf8 } from './ColumnFrameReader';
@@ -96,6 +96,13 @@ export class ColumnTermDecoder {
     this.datatypes = new LookupDecoder(raw.maxDatatypeTableSize, limit);
     this.iriNodes.length = this.iriNames.length = this.iriPrefixes.length = this.datatypeNodes.length = 0;
     this.lastNameAssignment = 0;
+  }
+  /** Fills the tables that resetLookups just created from a decoder state. */
+  protected restoreLookups(state: Pick<DecoderState, 'prefixes' | 'names' | 'datatypes'>): void {
+    this.prefixes.restore(state.prefixes);
+    this.names.restore(state.names);
+    this.datatypes.restore(state.datatypes);
+    this.lastNameAssignment = state.names.lastAssigned;
   }
   protected applyLookups(entries: readonly eu.ostrzyciel.jelly.core.proto.v1.RdfLookupEntryPacked.$Properties[], table: LookupDecoder): void {
     const isNames = table === this.names;
